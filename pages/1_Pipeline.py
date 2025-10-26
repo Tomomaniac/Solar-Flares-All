@@ -14,14 +14,15 @@ import streamlit as st
 from pathlib import Path
 import tempfile
 import traceback
+from typing import Optional
 
-from config import PRESELECTED_IMAGES_FOLDER
 import utils
+from config import PRESELECTED_IMAGES_FOLDER
 
 # ---------- Helper utilities ----------
 def save_uploaded_to_temp(uploaded) -> Path:
     """Save st.uploaded_file to a temporary file and return Path."""
-    suffix = Path(uploaded.name).suffix
+    suffix = Path(uploaded.name).suffix or ".tmp"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tmp.write(uploaded.read())
     tmp.flush()
@@ -100,13 +101,15 @@ with st.sidebar:
     use_preselected = st.checkbox("Use random preselected image on load", value=True)
     st.caption(f"Preselected folder: {PRESELECTED_IMAGES_FOLDER}")
 
-# Initialize or refresh selected image in session_state
+# Initialize current image in session_state as Path or None
 if "current_image_path" not in st.session_state:
     try:
+        # utils.get_random_preselected_image returns a Path
         st.session_state.current_image_path = utils.get_random_preselected_image()
     except Exception:
         st.session_state.current_image_path = None
 
+# Layout
 col1, col2 = st.columns([1, 2])
 
 with col1:
@@ -116,15 +119,14 @@ with col1:
 
     refresh = st.button("Refresh random preselected image")
 
-    if refresh or (uploaded is None and use_preselected and st.session_state.current_image_path is None):
-        # pick a new random preselected image
+    if refresh:
         try:
             st.session_state.current_image_path = utils.get_random_preselected_image()
         except Exception as e:
             st.error(f"Could not load a preselected image: {e}")
 
     # If user uploaded an image, save it to temp and use it
-    chosen_path = None
+    chosen_path: Optional[Path] = None
     if uploaded is not None:
         try:
             chosen_path = save_uploaded_to_temp(uploaded)
@@ -143,17 +145,19 @@ with col1:
     if chosen_path:
         st.write("Selected file:")
         st.write(f"- Path / name: {chosen_path}")
-        # show image preview if it's not a FITS file
-        if chosen_path.suffix.lower() != ".fits":
-            try:
-                st.image(str(chosen_path), use_column_width=True)
-            except Exception as e:
-                st.write("Preview not available:", e)
-        else:
-            st.write("FITS preview not shown (fits support requires astropy & specialized display).")
+        # show image preview using utils.prepare_display_image (handles TIFF mode 'F' and FITS if astropy present)
+        try:
+            preview_img = utils.prepare_display_image(chosen_path)
+            st.image(preview_img, use_column_width=True)
+        except RuntimeError as re:
+            st.write("Preview not available:", re)
+        except Exception as e:
+            st.write("Preview not available:", e)
 
     # allow override of detected filter in case filename doesn't contain it
     forced_filter = None
+    detected_filter = None
+    filter_code: Optional[str] = None
     if chosen_path:
         try:
             detected_filter = utils.parse_filter_from_filename(str(chosen_path.name))
@@ -161,6 +165,7 @@ with col1:
         except Exception:
             detected_filter = None
             st.warning("Could not auto-detect filter (131/193) from filename. Please select:")
+
         forced_filter = st.selectbox("Filter (131/193) - override if needed", options=["auto", "131", "193"])
         if forced_filter == "auto":
             filter_code = detected_filter
@@ -172,22 +177,23 @@ with col1:
     run_pipeline_btn = st.button("Run pipeline (Detection → Prediction fallback)")
     compare_btn = st.button("Compare detection vs prediction side-by-side")
 
+
 with col2:
     st.subheader("Results")
     if not chosen_path:
         st.info("No image selected. Upload or use a preselected image to run models.")
     else:
-        # Show filename and filter info
         st.markdown(f"**File:** `{chosen_path.name}`")
         st.markdown(f"**Filter (in use):** `{filter_code}`" if filter_code else "**Filter (in use):** _unknown_")
 
-    # Container for results
     results_container = st.container()
 
 # ---------- Pipeline logic ----------
-def run_detection_then_prediction(image_path: Path, filter_code: str):
+def run_detection_then_prediction(image_path: Path, filter_code: Optional[str]):
     with results_container:
         st.info("Running detection models (v3 → v1)...")
+        # If filter_code is provided and differs from filename-detected, warn the user,
+        # but utils.run_detection_pipeline_for_image determines filter from filename internally.
         try:
             detection_results = utils.run_detection_pipeline_for_image(image_path)
         except FileNotFoundError as e:
@@ -206,7 +212,7 @@ def run_detection_then_prediction(image_path: Path, filter_code: str):
         positive = detect_positive_from_results(detection_results)
         if positive:
             st.success("Detection: POSITIVE (at least one detection model indicates a flare)")
-            # Optionally show which model flagged it
+            # show which model flagged it
             flagged = [format_detection_result(r) for r in detection_results if (r.get("prediction") == 1) or (r.get("probability") and r.get("probability") >= 0.5)]
             if flagged:
                 st.write("Flagged by:")
@@ -241,7 +247,7 @@ def run_detection_then_prediction(image_path: Path, filter_code: str):
                 st.table(probs_table)
 
 
-def run_compare_detection_vs_prediction(image_path: Path, filter_code: str):
+def run_compare_detection_vs_prediction(image_path: Path, filter_code: Optional[str]):
     """
     Runs detection and prediction and displays side-by-side columns for visual comparison.
     """
@@ -277,7 +283,6 @@ if run_pipeline_btn:
     if not chosen_path:
         st.error("No image selected.")
     else:
-        # If filter is unknown, warn user
         if not filter_code:
             st.error("Cannot run: filter (131/193) unknown. Provide an image filename with filter or select it manually.")
         else:
@@ -292,9 +297,9 @@ if compare_btn:
         else:
             run_compare_detection_vs_prediction(chosen_path, filter_code)
 
-# Quick tips / footer
+# Footer / tips
 st.markdown("---")
 st.write(
     "Tips: model files and feature column pickles must be present in `models/` as described in the README. "
-    "The results shown rely on the placeholder feature extractor in `utils.py` unless you replace it with your training extractor."
+    "The results shown rely on the (placeholder) feature extractor in `utils.py` unless you replace it with your training extractor."
 )
