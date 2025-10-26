@@ -35,6 +35,76 @@ from config import (
 )
 
 
+
+# utils.py -- add these imports near the top if not already present
+from PIL import Image
+import numpy as np
+
+# utils.py -- add this helper (paste under other image helpers)
+def _normalize_array_to_uint8(arr: np.ndarray, clip_percentiles=(1, 99)) -> np.ndarray:
+    """
+    Normalize a float array to 0-255 uint8 using percentile clipping to reduce effect of outliers.
+    """
+    # replace NaNs/Infs
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    # clip using percentiles (robust)
+    lo, hi = np.percentile(arr, clip_percentiles)
+    if hi <= lo:
+        # fallback to min/max
+        lo, hi = arr.min(), arr.max()
+    if hi == lo:
+        # constant image
+        norm = np.zeros_like(arr, dtype=np.uint8)
+    else:
+        clipped = np.clip(arr, lo, hi)
+        norm = ((clipped - lo) / (hi - lo) * 255.0).astype(np.uint8)
+    return norm
+
+
+def prepare_display_image(path: Path, max_size=(1024, 1024)) -> Image.Image:
+    """
+    Load an image file (TIFF, PNG, JPG, FITS) and return a PIL.Image in 8-bit mode
+    suitable for Streamlit display. This normalizes float images to uint8.
+    - path: Path or str to image
+    - max_size: maximum size to downscale for preview (keeps aspect)
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    # FITS support
+    if suffix == ".fits":
+        if not ASTROPY_AVAILABLE:
+            raise RuntimeError("FITS preview requested but astropy is not available in the environment.")
+        from astropy.io import fits
+        with fits.open(str(path)) as hdul:
+            data = hdul[0].data.astype(np.float32)
+        arr8 = _normalize_array_to_uint8(data)
+        img = Image.fromarray(arr8)
+        # If single channel, convert to L then RGB for nicer preview
+        if img.mode == "L":
+            img = img.convert("RGB")
+    else:
+        # For normal rasters, use PIL then handle float mode
+        try:
+            pil = Image.open(str(path))
+        except Exception as e:
+            raise RuntimeError(f"Could not open image for preview: {e}")
+        # If mode is "F" or other non-8bit, convert using numpy normalization
+        if pil.mode == "F" or pil.mode.startswith("I") or pil.mode == "I;16":
+            arr = np.asarray(pil).astype(np.float32)
+            arr8 = _normalize_array_to_uint8(arr)
+            img = Image.fromarray(arr8).convert("RGB")
+        else:
+            # Convert palette/mode to RGB for consistent display
+            try:
+                img = pil.convert("RGB")
+            except Exception:
+                # last resort: convert to L then RGB
+                img = pil.convert("L").convert("RGB")
+
+    # Resize down for preview if necessary while keeping aspect ratio
+    img.thumbnail(max_size, Image.BILINEAR)
+    return img
+
 # -----------------------
 # Filename / filter utils
 # -----------------------
@@ -290,3 +360,6 @@ def run_prediction_models_for_image(image_path: Path) -> List[Dict]:
         except Exception as e:
             out.append({"model_label": label, "model_path": mp, "error": str(e)})
     return out
+
+
+
