@@ -29,15 +29,16 @@ def save_uploaded_to_temp(uploaded) -> Path:
     return dest
 
 
-st.set_page_config(page_title="Detection — Solar Flare App", layout="wide")
+st.set_page_config(page_title="Detection — Run detection models (v3 → v1)", page_icon="🔎", layout="centered")
 st.title("Detection — Run detection models (v3 → v1)")
+st.markdown("Upload a solar image or use a preselected one to run detection models (v3 → v1)")
 
 with st.sidebar:
     st.header("Controls")
-    use_preselected = st.checkbox("Use random preselected image on load", value=True)
+    use_preselected = st.checkbox("Use random preselected image on load", value=True, key="side_use_preselected")
     st.caption(f"Preselected folder: {PRESELECTED_IMAGES_FOLDER}")
     st.markdown("Select which detection versions to run:")
-    detection_versions = st.multiselect("Detection versions", options=["v3", "v1"], default=["v3", "v1"])
+    detection_versions = st.multiselect("Detection versions", options=["v3", "v1"], default=["v3", "v1"], key="side_detection_versions")
 
 # session_state for current image
 if "detection_current_image" not in st.session_state:
@@ -46,12 +47,12 @@ if "detection_current_image" not in st.session_state:
     except Exception:
         st.session_state.detection_current_image = None
 
-col1, col2 = st.columns([1, 2])
+col1, col2 = st.columns([1, 3])
 
 with col1:
     st.subheader("Input image")
-    uploaded = st.file_uploader("Upload image or FITS", type=None)
-    refresh = st.button("Refresh random preselected image")
+    uploaded = st.file_uploader("📁 Upload image or FITS", type=None, key="uploader")
+    refresh = st.button("🔄 Refresh random preselected image", key="refresh_preselected")
 
     if refresh:
         try:
@@ -73,31 +74,71 @@ with col1:
         else:
             st.info("No image available. Upload or add files to preselected_images/")
 
+    detected_filter = None
+    preview = None
     if chosen_path:
         st.write(f"Selected: `{chosen_path.name}`")
         try:
-            preview = utils.prepare_display_image(chosen_path)
-            st.image(preview, use_column_width=True)
-        except Exception as e:
-            st.write("Preview not available:", e)
-
-    detected_filter = None
-    if chosen_path:
-        try:
             detected_filter = utils.parse_filter_from_filename(str(chosen_path.name))
-            st.success(f"Auto-detected filter: {detected_filter}")
         except Exception:
-            st.warning("Could not auto-detect filter (131/193) from filename. Please select.")
+            detected_filter = None
 
-    chosen_override = st.selectbox("Filter (auto / override)", options=["auto", "131", "193"])
+        # Three selectors: Filter, Model, Colormap (match app_with_all)
+        s_col1, s_col2, s_col3 = st.columns(3)
+        with s_col1:
+            if detected_filter:
+                default_index = 0 if detected_filter == "131 Å" else 1
+                filter_type = st.selectbox(
+                    "🔬 Select Filter",
+                    options=["131 Å", "193 Å"],
+                    index=default_index,
+                    key="det_filter_select_main_inner",
+                )
+                st.caption(f"✓ Auto-detected: {detected_filter}")
+            else:
+                filter_type = st.selectbox(
+                    "🔬 Select Filter",
+                    options=["131 Å", "193 Å"],
+                    key="det_filter_select_main_inner",
+                )
+            filter_num = filter_type.split()[0]
+
+        with s_col2:
+            model_version = st.selectbox(
+                "🤖 Select Model",
+                options=["Model v3", "Model v1"],
+                key="det_model_select_main_inner",
+            )
+            model_num = "v3" if "v3" in model_version else "v1"
+
+        with s_col3:
+            colormap = st.selectbox(
+                "🎨 Colormap",
+                options=["hot", "inferno", "plasma", "magma", "viridis", "gray"],
+                key="det_colormap_select_main_inner",
+            )
+
+        # Prepare preview (will display in right column for larger view)
+        try:
+            preview = utils.prepare_display_image(chosen_path, colormap=colormap)
+        except Exception as e:
+            preview = None
+
+    chosen_override = st.selectbox("Filter (auto / override)", options=["auto", "131", "193"], key="filter_override_main")
     filter_code = detected_filter if chosen_override == "auto" else chosen_override
 
     st.markdown("---")
-    run_btn = st.button("Run detection")
-    compare_versions_btn = st.button("Compare v3 vs v1 (side-by-side)")
+    run_btn = st.button("🔍 Run detection", key="run_detection")
+    compare_versions_btn = st.button("Compare v3 vs v1 (side-by-side)", key="compare_versions")
 
 with col2:
     st.subheader("Results")
+    # Show larger preview at top of results column when available
+    try:
+        if preview is not None:
+            st.image(preview, caption=f"Preview: {chosen_path.name}", use_column_width=True)
+    except Exception:
+        pass
     if not chosen_path:
         st.info("Select or upload an image to run detection.")
     else:
@@ -133,7 +174,7 @@ if run_btn:
         with out_container:
             st.info("Running detection models...")
             try:
-                results = utils.run_detection_pipeline_for_image(chosen_path, filter_code=filter_code)
+                results = utils.run_detection_pipeline_for_image(chosen_path, filter_code=filter_code, detection_versions=detection_versions)
             except FileNotFoundError as e:
                 st.error(e)
                 results = []

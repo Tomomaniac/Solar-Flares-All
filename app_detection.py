@@ -20,20 +20,20 @@ from detection_utils import (
 def get_random_preselected_image():
     """Get a random image from preselected_images folder"""
     preselected_folder = Path("preselected_images")
-    
+
     if not preselected_folder.exists():
         return None
-    
-    # Get all image files
+
+    # Get all image files recursively (include subfolders)
     image_extensions = ['.tif', '.tiff', '.png', '.jpg', '.jpeg']
     image_files = []
     for ext in image_extensions:
-        image_files.extend(list(preselected_folder.glob(f'*{ext}')))
-        image_files.extend(list(preselected_folder.glob(f'*{ext.upper()}')))
-    
+        image_files.extend(list(preselected_folder.rglob(f'*{ext}')))
+        image_files.extend(list(preselected_folder.rglob(f'*{ext.upper()}')))
+
     if not image_files:
         return None
-    
+
     return random.choice(image_files)
 
 
@@ -180,6 +180,72 @@ def main():
                     
                 except Exception as e:
                     st.error(f"❌ Error during analysis: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+        # === Detection extra UI: preview + explicit Run Detection (matches app_with_all) ===
+        st.markdown("---")
+        st.subheader("🔎 Detection (v3 → v1)")
+
+        det_col1, det_col2, det_col3 = st.columns(3)
+        with det_col1:
+            if detected_filter:
+                default_index = 0 if detected_filter == "131 Å" else 1
+                det_filter_type = st.selectbox(
+                    "🔬 Detection Filter",
+                    options=["131 Å", "193 Å"],
+                    index=default_index,
+                    key="det_filter_select",
+                )
+            else:
+                det_filter_type = st.selectbox(
+                    "🔬 Detection Filter",
+                    options=["131 Å", "193 Å"],
+                    key="det_filter_select",
+                )
+            det_filter_num = det_filter_type.split()[0]
+
+        with det_col2:
+            det_model_version = st.selectbox(
+                "🤖 Detection Model",
+                options=["Model v3", "Model v1"],
+                index=0,
+                key="det_model_select",
+            )
+            det_model_num = det_model_version.split()[1]
+
+        with det_col3:
+            det_colormap = st.selectbox(
+                "🎨 Detection Colormap",
+                options=["hot", "inferno", "plasma", "magma", "viridis", "gray"],
+                index=0,
+                key="det_colormap_select",
+            )
+
+        # Show preview using detection colormap
+        try:
+            img_for_preview = img_array if img_array is not None else np.array(Image.open(st.session_state.preselected_image_path))
+            det_img_norm = preprocess_image(img_for_preview)
+            det_preview = apply_colormap(det_img_norm, det_colormap)
+            st.image(det_preview, caption=f"Detection preview ({det_filter_num})", use_container_width=True)
+        except Exception:
+            pass
+
+        if st.button("🔍 Run Detection", key="run_detection_button"):
+            with st.spinner("Running detection models..."):
+                try:
+                    # Use same predict_flare function
+                    det_result = predict_flare(
+                        img_for_preview,
+                        det_model_num,
+                        det_filter_num,
+                        models,
+                        feature_cols_v1,
+                        feature_cols_v3,
+                    )
+                    display_results(det_result, det_model_num, det_filter_num, det_model_version)
+                except Exception as e:
+                    st.error(f"❌ Error during detection: {e}")
                     import traceback
                     st.code(traceback.format_exc())
     

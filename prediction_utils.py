@@ -132,7 +132,7 @@ def load_prediction_models():
         '193': joblib.load("./models_prediction/model_prediction_193.pkl")
     }
     
-    with open("./models_prediction/feature_columns_prediction.pkl", 'rb') as f:
+    with open("feature_columns_prediction.pkl", 'rb') as f:
         feature_cols = pickle.load(f)
     
     return models, feature_cols
