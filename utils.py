@@ -47,7 +47,71 @@ from config import (
     PRESELECTED_IMAGES_FOLDER,
     IMAGE_EXTENSIONS,
 )
+from typing import List, Dict, Optional
+from pathlib import Path
 
+def run_detection_pipeline_for_image(image_path: Path, filter_code: Optional[str] = None) -> List[Dict]:
+    """
+    Run ordered detection models for the image.
+    If filter_code is None, it is parsed from the filename.
+    Returns a list of result dicts:
+      { "version": "v3"/"v1", "model_path": Path, "prediction": int|None, "probability": float|None, "raw": list|None, "error": str|None }
+    """
+    image_path = Path(image_path)
+    if filter_code is None:
+        filter_code = parse_filter_from_filename(image_path.name)
+    model_paths = build_detection_model_paths(filter_code)
+    results: List[Dict] = []
+
+    # extract features as Series -> DataFrame
+    try:
+        feats = basic_extract_features_from_image(image_path)
+        X_df = feats.to_frame().T
+    except Exception as e:
+        return [{"version": None, "model_path": None, "error": f"Feature extraction failed: {e}"}]
+
+    for mp in model_paths:
+        version = "v3" if "v3" in mp.name else "v1" if "v1" in mp.name else None
+        if not mp.exists():
+            results.append({"version": version, "model_path": mp, "error": f"Model file not found: {mp}"})
+            continue
+        try:
+            model = load_model(mp)
+        except Exception as e:
+            results.append({"version": version, "model_path": mp, "error": f"Model load error: {e}"})
+            continue
+
+        try:
+            if hasattr(model, "predict_proba"):
+                probs = model.predict_proba(X_df)
+                pos_prob = float(probs[0, 1]) if probs.shape[1] > 1 else float(probs[0, 0])
+                pred = 1 if pos_prob >= 0.5 else 0
+                results.append({
+                    "version": version,
+                    "model_path": mp,
+                    "prediction": pred,
+                    "probability": pos_prob,
+                    "raw": probs.tolist()
+                })
+                continue
+        except Exception:
+            # fall back to predict
+            pass
+
+        try:
+            p = model.predict(X_df)
+            p0 = int(p[0]) if hasattr(p, "__len__") else int(p)
+            results.append({
+                "version": version,
+                "model_path": mp,
+                "prediction": p0,
+                "probability": None,
+                "raw": None
+            })
+        except Exception as e:
+            results.append({"version": version, "model_path": mp, "error": f"Predict error: {e}"})
+
+    return results
 
 # -----------------------
 # Filename / filter utils
