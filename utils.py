@@ -34,7 +34,148 @@ from config import (
     IMAGE_EXTENSIONS,
 )
 
+# Add/replace these imports at top of utils.py if not present
+from typing import Optional, List, Dict
 
+# Normalization helper (robust)
+def _normalize_array_to_uint8(arr: np.ndarray, clip_percentiles=(1, 99)) -> np.ndarray:
+    """
+    Normalize a float array to 0-255 uint8 using percentile clipping.
+    Robust to NaNs/Infs and empty arrays.
+    """
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    if arr.size == 0:
+        return arr.astype(np.uint8)
+    # compute percentiles safely
+    try:
+        lo, hi = np.percentile(arr, clip_percentiles)
+    except Exception:
+        lo, hi = float(np.min(arr)), float(np.max(arr))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = float(np.min(arr)), float(np.max(arr))
+    if hi == lo:
+        # constant image -> mid-gray
+        norm = np.full_like(arr, fill_value=128, dtype=np.uint8)
+    else:
+        clipped = np.clip(arr, lo, hi)
+        norm = ((clipped - lo) / (hi - lo) * 255.0).astype(np.uint8)
+    return norm
+
+
+def run_detection_pipeline_for_image(image_path: Path, filter_code: Optional[str] = None) -> List[Dict]:
+    """
+    Run detection models in order (v3 then v1) for the specified filter.
+    If filter_code is None, attempt to parse from filename.
+    Returns list of result dicts with keys:
+      - version, model_path, prediction (int or None), probability (float or None), raw (optional), error (optional)
+    """
+    # determine filter
+    if filter_code is None:
+        filter_code = parse_filter_from_filename(str(image_path.name))
+    # build ordered detection model paths
+    model_paths = build_detection_model_paths(filter_code)
+    results = []
+
+    # extract features (uses your basic extractor or a real one)
+    try:
+        feats = basic_extract_features_from_image(image_path)
+    except Exception as e:
+        # return single error entry
+        return [{"version": None, "model_path": None, "error": f"Feature extraction failed: {e}"}]
+
+    for model_path in model_paths:
+        version = "v3" if "v3" in model_path.name else "v1"
+        try:
+            model = load_model(model_path)
+        except Exception as e:
+            results.append({"version": version, "model_path": model_path, "error": f"Model load error: {e}"})
+            continue
+
+        # Try predict_proba if available
+        try:
+            if hasattr(model, "predict_proba"):
+                probs = model.predict_proba(feats.to_frame().T)
+                # if binary, assume positive class is index 1
+                pos_prob = float(probs[0, 1]) if probs.shape[1] > 1 else float(probs[0, 0])
+                pred = 1 if pos_prob >= 0.5 else 0
+                results.append({
+                    "version": version,
+                    "model_path": model_path,
+                    "prediction": pred,
+                    "probability": pos_prob,
+                    "raw": probs.tolist()
+                })
+                continue
+        except Exception:
+            # ignore and fallback to predict
+            pass
+
+        # Fallback to predict()
+        try:
+            p = model.predict(feats.to_frame().T)
+            p0 = int(p[0]) if hasattr(p, "__len__") else int(p)
+            results.append({
+                "version": version,
+                "model_path": model_path,
+                "prediction": p0,
+                "probability": None,
+                "raw": None
+            })
+        except Exception as e:
+            results.append({"version": version, "model_path": model_path, "error": f"Predict error: {e}"})
+
+    return results
+
+
+def run_prediction_models_for_image(image_path: Path, filter_code: Optional[str] = None) -> List[Dict]:
+    """
+    Run prediction models (prediction_v1 and pred3/prediction_v2) for the given filter.
+    If filter_code is None, attempt to parse from filename.
+    Returns list of dicts:
+      - model_label, model_path, prediction, probabilities (or None), error (optional)
+    """
+    if filter_code is None:
+        filter_code = parse_filter_from_filename(str(image_path.name))
+
+    model_paths = build_prediction_model_paths(filter_code)  # returns dict label -> Path
+    # load feature columns expected by prediction models
+    try:
+        feature_cols = load_feature_columns_for_prediction()
+    except Exception as e:
+        return [{"model_label": None, "model_path": None, "error": f"Feature columns load error: {e}"}]
+
+    # extract and align features
+    try:
+        feats = basic_extract_features_from_image(image_path)
+        df = align_features_to_columns(feats, feature_cols)
+    except Exception as e:
+        return [{"model_label": None, "model_path": None, "error": f"Feature extraction/alignment error: {e}"}]
+
+    results = []
+    for label, mp in model_paths.items():
+        try:
+            model = load_model(mp)
+        except Exception as e:
+            results.append({"model_label": label, "model_path": mp, "error": f"Model load error: {e}"})
+            continue
+
+        try:
+            if hasattr(model, "predict_proba"):
+                probs = model.predict_proba(df)
+                pred = int(model.predict(df)[0])
+                results.append({"model_label": label, "model_path": mp, "prediction": pred, "probabilities": probs.tolist()})
+                continue
+        except Exception:
+            pass
+
+        try:
+            pred = model.predict(df)
+            p0 = int(pred[0]) if hasattr(pred, "__len__") else int(pred)
+            results.append({"model_label": label, "model_path": mp, "prediction": p0, "probabilities": None})
+        except Exception as e:
+            results.append({"model_label": label, "model_path": mp, "error": f"Predict error: {e}"})
+
+    return results
 
 # utils.py -- add these imports near the top if not already present
 from PIL import Image
