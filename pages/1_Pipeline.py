@@ -19,15 +19,18 @@ from typing import Optional
 import utils
 from config import PRESELECTED_IMAGES_FOLDER
 
-# ---------- Helper utilities ----------
+# pages/1_Pipeline.py — replace save_uploaded_to_temp with this
 def save_uploaded_to_temp(uploaded) -> Path:
-    """Save st.uploaded_file to a temporary file and return Path."""
-    suffix = Path(uploaded.name).suffix or ".tmp"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(uploaded.read())
-    tmp.flush()
-    tmp.close()
-    return Path(tmp.name)
+    """
+    Save st.uploaded_file to a temporary file preserving the original filename.
+    Returns a Path to the saved file.
+    """
+    # create a temporary directory and save using the original filename so parse_filter_from_filename can see it
+    tmpdir = tempfile.mkdtemp()
+    dest = Path(tmpdir) / Path(uploaded.name).name
+    with open(dest, "wb") as f:
+        f.write(uploaded.read())
+    return dest
 
 
 def detect_positive_from_results(results) -> bool:
