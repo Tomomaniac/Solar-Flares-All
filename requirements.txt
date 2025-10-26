@@ -1,0 +1,9 @@
+```text
+streamlit>=1.20.0
+numpy
+pandas>=1.5.0
+scikit-learn>=1.0.0
+joblib>=1.2.0
+Pillow>=9.0.0
+# If you need FITS support:
+astropy>=5.0  # optional; remove if not using FITS files
